@@ -37,37 +37,22 @@ public struct VoiceTranscriptSegment: Equatable {
     }
 }
 
-public struct VoiceTranscript: Equatable {
-    public let segments: [VoiceTranscriptSegment]
-
-    public init(segments: [VoiceTranscriptSegment]) {
-        self.segments = segments
-    }
+public enum VoiceTranscriptTimingProvenance: Equatable {
+    case measured
+    /// Server words matched one-to-one to measured recognizer tokens; not an acoustic accuracy guarantee.
+    case aligned
+    case estimated
+    case demo
 }
 
-public struct VoiceSummary: Equatable, Codable {
-    public struct KeyPoint: Equatable, Codable {
-        public let time: Double
-        public let text: String
-    }
+public struct VoiceTranscript: Equatable {
+    public let segments: [VoiceTranscriptSegment]
+    public let timingProvenance: VoiceTranscriptTimingProvenance
 
-    /// A question that is asked in the voice message, with the time where it is asked.
-    public struct Question: Equatable, Codable {
-        public let time: Double
-        public let text: String
+    public init(segments: [VoiceTranscriptSegment], timingProvenance: VoiceTranscriptTimingProvenance = .estimated) {
+        self.segments = segments
+        self.timingProvenance = timingProvenance
     }
-
-    public struct Task: Equatable, Codable {
-        public let text: String
-        public var isCompleted: Bool
-    }
-
-    public let headline: String
-    public let keyPoints: [KeyPoint]
-    public var tasks: [Task]
-    public let questions: [Question]
-    /// Placeholder text that is not made from the voice message; it is never shared.
-    public var isPlaceholder = false
 }
 
 public enum VoiceTranscriptState {
@@ -81,6 +66,8 @@ public enum VoiceTranscriptState {
 #if DEBUG
 /// Why the last summary request gave nothing. Debug builds show it on the tab, so a screenshot says what went wrong.
 var voiceSummaryDebugReason: String?
+/// Why the last transcript request gave nothing. Never contains message text or identifiers.
+var voiceTranscriptDebugReason: String?
 #endif
 
 public enum VoiceSummaryState {
@@ -155,7 +142,7 @@ public final class MockVoiceTranscriptProvider: VoiceTranscriptProvider {
             }
             segments.append(VoiceTranscriptSegment(words: words))
         }
-        return VoiceTranscript(segments: segments)
+        return VoiceTranscript(segments: segments, timingProvenance: .demo)
     }
 
     public func summary() -> VoiceSummary {
@@ -394,6 +381,6 @@ public final class RandomVoiceTranscriptProvider: VoiceTranscriptProvider {
                 position += pauseWeight * secondsPerWeight
             }
         }
-        return VoiceTranscript(segments: segments)
+        return VoiceTranscript(segments: segments, timingProvenance: .demo)
     }
 }

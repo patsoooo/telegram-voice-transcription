@@ -1,0 +1,2 @@
+# Integration patches preserve upstream whitespace in their contextual diff lines.
+Integration/*.patch whitespace=-blank-at-eol

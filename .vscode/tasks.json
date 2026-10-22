@@ -1,0 +1,22 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Validate Telegram feature core",
+			"type": "shell",
+			"command": "swift build && swiftc VoiceTranscriptScreen/Sources/VoiceSummaryCore.swift Scripts/Smoke/main.swift -o .build/voice-summary-smoke && .build/voice-summary-smoke && swiftc VoiceTranscriptScreen/Sources/VoiceTranscriptAlignmentCore.swift Scripts/AlignmentSmoke/main.swift -o .build/voice-alignment-smoke && .build/voice-alignment-smoke && node --test Tests/IntegrationInstaller.test.mjs && swiftc -frontend -parse VoiceTranscriptScreen/Sources/*.swift && git diff --check",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Build Telegram simulator (compile-only configuration)",
+			"type": "shell",
+			"command": "export DEVELOPER_DIR=\"${TELEGRAM_XCODE_DEVELOPER_DIR:-$HOME/Applications/Xcode-26.6.app/Contents/Developer}\"; ./build-input/bazel-9.2.0-darwin-arm64 --output_base=\"$HOME/Library/Caches/telegram-bazel-xcode266\" --host_jvm_args=-Djavax.net.ssl.trustStore=\"$HOME/Library/Caches/telegram-build-trust/bazel-cacerts\" --host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit build Telegram/Telegram --keep_going --xcode_version=26.6 --ios_sdk_version=26.5 --macos_sdk_version=26.5 --repo_env=DEVELOPER_DIR=\"$DEVELOPER_DIR\" --action_env=XCODE_VERSION_OVERRIDE=\"$DEVELOPER_DIR\" --host_action_env=XCODE_VERSION_OVERRIDE=\"$DEVELOPER_DIR\" --//Telegram:disableProvisioningProfiles --define=buildNumber=1 -c dbg --ios_multi_cpus=sim_arm64 --watchos_cpus=arm64_32 --verbose_failures --jobs=8",
+			"options": { "cwd": "${workspaceFolder}/../Telegram-iOS" },
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}

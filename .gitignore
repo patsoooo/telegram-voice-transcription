@@ -1,1 +1,5 @@
 .DS_Store
+.build/
+.swiftpm/
+Integration/local-development.json
+Integration/simulator-compile-only.json

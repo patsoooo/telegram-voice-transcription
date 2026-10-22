@@ -1,0 +1,39 @@
+name: Swift core checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  swift-core:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build and test Foundation core (not a full iOS build)
+        run: swift build && swift test
+      - name: Syntax-parse all repository Swift sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' source; do
+            swiftc -frontend -parse "$source"
+          done < <(find . -type d \( -name .git -o -name .build \) -prune -o -type f -name '*.swift' -print0)
+      - name: Compile and run standalone Foundation smoke checks
+        run: |
+          swiftc VoiceTranscriptScreen/Sources/VoiceSummaryCore.swift Scripts/Smoke/main.swift -o .build/voice-summary-smoke
+          .build/voice-summary-smoke
+          swiftc VoiceTranscriptScreen/Sources/VoiceTranscriptAlignmentCore.swift Scripts/AlignmentSmoke/main.swift -o .build/voice-alignment-smoke
+          .build/voice-alignment-smoke
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify safe integration installer with isolated fixtures
+        run: node --test Tests/IntegrationInstaller.test.mjs
+      - name: Check diff whitespace
+        run: git diff --check

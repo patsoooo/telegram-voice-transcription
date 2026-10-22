@@ -1,0 +1,14 @@
+{
+  "bundle_id": "org.local.voicetranscript.Development",
+   "api_id": "REPLACE_WITH_YOUR_TELEGRAM_API_ID",
+  "api_hash": "REPLACE_WITH_YOUR_TELEGRAM_API_HASH",
+  "team_id": "0000000000",
+  "app_center_id": "0",
+  "is_internal_build": "true",
+  "is_appstore_build": "false",
+  "appstore_id": "0",
+  "app_specific_url_scheme": "voice-transcript-development",
+  "premium_iap_product_id": "",
+  "enable_siri": false,
+  "enable_icloud": false
+}

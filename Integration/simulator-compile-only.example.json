@@ -1,0 +1,14 @@
+{
+  "bundle_id": "org.local.voicetranscript.CompileOnly",
+  "api_id": "0",
+  "api_hash": "00000000000000000000000000000000",
+  "team_id": "0000000000",
+  "app_center_id": "0",
+  "is_internal_build": "true",
+  "is_appstore_build": "false",
+  "appstore_id": "0",
+  "app_specific_url_scheme": "voice-transcript-compile-only",
+  "premium_iap_product_id": "",
+  "enable_siri": false,
+  "enable_icloud": false
+}

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/TelegramMessenger/Telegram-iOS.git",
+  "commit": "f1dd7a2dbd02cbbf513e75d5695d8d36d1cf5838",
+  "patch": "telegram-ios-f1dd7a2.patch",
+  "versions_source": "versions.json",
+  "required_versions": {
+    "app": "13.0",
+    "xcode": "26.6",
+    "deploy_xcode": "26.2",
+    "bazel": "9.2.0:dd466352a3e4d3581b8898740ee1ff208866ccbe25f8d367c5dcb950219587e6",
+    "macos": "26"
+  },
+  "patch_scope": {
+    "tracked_host_files": 18,
+    "new_host_files": [
+      "submodules/AccountContext/Sources/VoiceReplyFragment.swift"
+    ],
+    "excluded_host_files": [
+      "docs/voice-transcript-reply.md"
+    ],
+    "includes": [
+      "Baseline host integration",
+      "Direct voice-bubble transcript entry",
+      "Recipient-visible editable transcript body quote"
+    ]
+  },
+  "feature_module": {
+    "source": "VoiceTranscriptScreen",
+    "host_destination": "submodules/TelegramUI/Components/VoiceTranscriptScreen",
+    "included_in_patch": false,
+    "installation": "Handled separately by the integration installer; do not duplicate the feature module in this patch."
+  },
+  "checkout": {
+    "sparse": true,
+    "submodules_downloaded": false
+  }
+}

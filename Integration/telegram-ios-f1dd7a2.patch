@@ -1,0 +1,1078 @@
+diff --git a/submodules/TelegramCore/Sources/TelegramEngine/Messages/Transcription.swift b/submodules/TelegramCore/Sources/TelegramEngine/Messages/Transcription.swift
+index 877ef70d..235ebc98 100644
+--- a/submodules/TelegramCore/Sources/TelegramEngine/Messages/Transcription.swift
++++ b/submodules/TelegramCore/Sources/TelegramEngine/Messages/Transcription.swift
+@@ -6,22 +6,32 @@ import MtProtoKit
+ 
+ public enum EngineAudioTranscriptionResult {
+     case success
+-    case error
++    case error(String)
+ }
+ 
+ private enum InternalAudioTranscriptionResult {
+     case success(Api.messages.TranscribedAudio)
+-    case error(AudioTranscriptionMessageAttribute.TranscriptionError)
++    case error(AudioTranscriptionMessageAttribute.TranscriptionError, String)
+     case limitExceeded(Int32)
+ }
+ 
++/// Keep only the protocol error identifier. Never propagate arbitrary server text into UI diagnostics.
++private func audioTranscriptionErrorCode(_ value: String) -> String {
++    let candidate = String(value.prefix { $0 != " " && $0 != "\n" && $0 != "\r" })
++    guard !candidate.isEmpty, candidate.count <= 64,
++          candidate.allSatisfy({ $0 == "_" || $0.isASCII && ($0.isUppercase || $0.isNumber) }) else {
++        return "UNKNOWN"
++    }
++    return candidate
++}
++
+ func _internal_transcribeAudio(postbox: Postbox, network: Network, messageId: MessageId) -> Signal<EngineAudioTranscriptionResult, NoError> {
+     return postbox.transaction { transaction -> Api.InputPeer? in
+         return transaction.getPeer(messageId.peerId).flatMap(apiInputPeer)
+     }
+     |> mapToSignal { inputPeer -> Signal<EngineAudioTranscriptionResult, NoError> in
+         guard let inputPeer = inputPeer else {
+-            return .single(.error)
++            return .single(.error("PEER_UNAVAILABLE"))
+         }
+         return network.request(Api.functions.messages.transcribeAudio(peer: inputPeer, msgId: messageId.id))
+         |> map { result -> InternalAudioTranscriptionResult in
+@@ -41,11 +51,12 @@ func _internal_transcribeAudio(postbox: Postbox, network: Network, messageId: MessageId) -> Signal<InternalAudioTranscriptionResult, NoError> {
+             } else {
+                 mappedError = .generic
+             }
+-            return .single(.error(mappedError))
++            return .single(.error(mappedError, audioTranscriptionErrorCode(error.errorDescription)))
+         }
+         |> mapToSignal { result -> Signal<EngineAudioTranscriptionResult, NoError> in
+             return postbox.transaction { transaction -> EngineAudioTranscriptionResult in
+                 let updatedAttribute: AudioTranscriptionMessageAttribute
++                var failureCode: String? = nil
+                 switch result {
+                 case let .success(transcribedAudio):
+                     switch transcribedAudio {
+@@ -66,8 +77,9 @@ func _internal_transcribeAudio(postbox: Postbox, network: Network, messageId: MessageId) -> Signal<EngineAudioTranscriptionResult, NoError> {
+                             return updated
+                         }
+                     }
+-                case let .error(error):
++                case let .error(error, code):
+                     updatedAttribute = AudioTranscriptionMessageAttribute(id: 0, text: "", isPending: false, didRate: false, error: error)
++                    failureCode = code
+                 case let .limitExceeded(timeout):
+                     let cooldownTime = Int32(CFAbsoluteTimeGetCurrent() + NSTimeIntervalSince1970) + timeout
+                     _internal_updateAudioTranscriptionTrialState(transaction: transaction) { current in
+@@ -75,9 +87,8 @@ func _internal_transcribeAudio(postbox: Postbox, network: Network, messageId: MessageId) -> Signal<EngineAudioTranscriptionResult, NoError> {
+                         updated = updated.withUpdatedCooldownUntilTime(cooldownTime)
+                         return updated
+                     }
+-                    return .error
++                    return .error("FLOOD_WAIT")
+                 }
+-                    
+                 transaction.updateMessage(messageId, update: { currentMessage in
+                     let storeForwardInfo = currentMessage.forwardInfo.flatMap(StoreMessageForwardInfo.init)
+                     var attributes = currentMessage.attributes.filter { !($0 is AudioTranscriptionMessageAttribute) }
+@@ -90,7 +101,7 @@ func _internal_transcribeAudio(postbox: Postbox, network: Network, messageId: MessageId) -> Signal<EngineAudioTranscriptionResult, NoError> {
+                 if updatedAttribute.error == nil {
+                     return .success
+                 } else {
+-                    return .error
++                    return .error(failureCode ?? "UNKNOWN")
+                 }
+             }
+         }
+diff --git a/Telegram/Telegram-iOS/en.lproj/Localizable.strings b/Telegram/Telegram-iOS/en.lproj/Localizable.strings
+index 5c82abe..1d742b8 100644
+--- a/Telegram/Telegram-iOS/en.lproj/Localizable.strings
++++ b/Telegram/Telegram-iOS/en.lproj/Localizable.strings
+@@ -17096,3 +17096,23 @@ Error: %8$@";
+ "Notification.GramTransfer.UnknownUser" = "UNKNOWN USER";
+ 
+ "Chat.ViewStyle" = "VIEW STYLE";
++
++"VoiceTranscript.Transcript" = "Transcript";
++"VoiceTranscript.OpenTranscript" = "Open transcript";
++"VoiceTranscript.AISummary" = "AI Summary";
++"VoiceTranscript.Synchronize" = "Synchronize";
++"VoiceTranscript.KeyPoints" = "Key points";
++"VoiceTranscript.Tasks" = "Tasks";
++"VoiceTranscript.Questions" = "Questions";
++"VoiceTranscript.SummarySource" = "Cocoon AI Summary";
++"VoiceTranscript.More" = "more";
++"VoiceTranscript.Less" = "less";
++"VoiceTranscript.TasksCompleted" = "%1$@ of %2$@ completed";
++"VoiceTranscript.SummaryUnavailable" = "The summary is not available for this voice message";
++"VoiceTranscript.TranscriptUnavailable" = "Transcript is not available for this voice message";
++"VoiceTranscript.CopyTranscript" = "Copy Transcript";
++"VoiceTranscript.TranslateTranscript" = "Translate Transcript";
++"VoiceTranscript.NextVoice" = "Next Voice";
++"VoiceTranscript.PreviousVoice" = "Previous Voice";
++"VoiceTranscript.ItemsHint" = "Tap the time to jump to it in the transcript. Tap the text to reply in the chat or copy it.";
++"VoiceTranscript.TasksHint" = "Tap a task to mark it as done.";
+diff --git a/submodules/AccountContext/Sources/AccountContext.swift b/submodules/AccountContext/Sources/AccountContext.swift
+index 2911a66..301ecc4 100644
+--- a/submodules/AccountContext/Sources/AccountContext.swift
++++ b/submodules/AccountContext/Sources/AccountContext.swift
+@@ -1371,7 +1371,8 @@ public final class TextProcessingScreenSendContextActions {
+ 
+ public enum TextProcessingScreenMode {
+     case edit(saveRestoreStateId: EnginePeer.Id?, completion: (ComposedRichMessage) -> Void, send: ((ComposedRichMessage) -> Void)?, sendContextActions: TextProcessingScreenSendContextActions?)
+-    case translate(fromLanguage: String?, applyResult: ((ComposedRichMessage) -> Void)?)
++    /// `displaysInfoButton` is false when the screen is opened from one that already has an information screen of its own on top.
++    case translate(fromLanguage: String?, applyResult: ((ComposedRichMessage) -> Void)?, displaysInfoButton: Bool = true)
+     case preview(style: TelegramComposeAIMessageMode.CloudStyle.Custom, authorPeer: EnginePeer?, initialPreview: AIMessageStylePreview?, isAlreadyAdded: Bool, added: () -> Void)
+     case generate(completion: (ComposedRichMessage) -> Void)
+ }
+@@ -1454,6 +1455,7 @@ public protocol SharedAccountContext: AnyObject {
+     func messageFromPreloadedChatHistoryViewForLocation(id: EngineMessage.Id, location: ChatHistoryLocationInput, context: AccountContext, chatLocation: ChatLocation, subject: ChatControllerSubject?, chatLocationContextHolder: Atomic<ChatLocationContextHolder?>, tag: EngineHistoryViewInputTag?) -> Signal<(EngineMessage.Index?, Bool), NoError>
+     
+     func makeOverlayAudioPlayerController(context: AccountContext, chatLocation: ChatLocation, type: MediaManagerPlayerType, initialMessageId: EngineMessage.Id, initialOrder: MusicPlaybackSettingsOrder, playlistLocation: SharedMediaPlaylistLocation?, parentNavigationController: NavigationController?) -> ViewController & OverlayAudioPlayerController
++    func makeVoiceTranscriptScreen(context: AccountContext, messageId: EngineMessage.Id, peerTitle: String) -> ViewController
+     func makePeerInfoController(context: AccountContext, updatedPresentationData: (initial: PresentationData, signal: Signal<PresentationData, NoError>)?, peer: EnginePeer, mode: PeerInfoControllerMode, avatarInitiallyExpanded: Bool, fromChat: Bool, requestsContext: PeerInvitationImportersContext?) -> ViewController?
+     func makeChannelAdminController(context: AccountContext, peerId: EnginePeer.Id, adminId: EnginePeer.Id, initialParticipant: ChannelParticipant) -> ViewController?
+     func makeDeviceContactInfoController(context: ShareControllerAccountContext, environment: ShareControllerEnvironment, subject: DeviceContactInfoSubject, completed: (() -> Void)?, cancelled: (() -> Void)?) -> ViewController
+diff --git a/submodules/AccountContext/Sources/ChatController.swift b/submodules/AccountContext/Sources/ChatController.swift
+index 57d02ca..8703d23 100644
+--- a/submodules/AccountContext/Sources/ChatController.swift
++++ b/submodules/AccountContext/Sources/ChatController.swift
+@@ -1238,6 +1238,11 @@ public protocol ChatController: ViewController {
+     func removeAd(opaqueId: Data)
+     
+     func restrictedSendingContentsText() -> String
++    var accountId: AccountRecordId { get }
++
++    /// Puts a reply to the message in the input panel and focuses the input, as the Reply action of the message's menu does.
++    /// Returns false, and does nothing, when the message is not in the part of the history that is loaded.
++    func setupReply(toMessageId messageId: EngineMessage.Id) -> Bool
+ }
+ 
+ public protocol ChatMessagePreviewItemNode: AnyObject {
+diff --git a/submodules/AccountContext/Sources/SharedMediaPlayer.swift b/submodules/AccountContext/Sources/SharedMediaPlayer.swift
+index aa1c752..9785dd3 100644
+--- a/submodules/AccountContext/Sources/SharedMediaPlayer.swift
++++ b/submodules/AccountContext/Sources/SharedMediaPlayer.swift
+@@ -237,6 +237,7 @@ public enum SharedMediaPlayerControlAction {
+     case setOrder(MusicPlaybackSettingsOrder)
+     case setLooping(MusicPlaybackSettingsLooping)
+     case setBaseRate(AudioPlaybackRate)
++    case setSoundMuted(Bool)
+ }
+ 
+ public enum SharedMediaPlaylistControlAction {
+diff --git a/submodules/ChatInterfaceState/Sources/ChatInterfaceState.swift b/submodules/ChatInterfaceState/Sources/ChatInterfaceState.swift
+index e50d5d3..f1c60b7 100644
+--- a/submodules/ChatInterfaceState/Sources/ChatInterfaceState.swift
++++ b/submodules/ChatInterfaceState/Sources/ChatInterfaceState.swift
+@@ -481,11 +481,17 @@ public final class ChatInterfaceState: Codable, Equatable {
+         public var messageId: EngineMessage.Id
+         public var quote: EngineMessageReplyQuote?
+         public var innerSubject: EngineMessageReplyInnerSubject?
++        /// Legacy/local reply-panel metadata. Codable/Equatable are synthesized, including this field.
++        /// New transcript Quote actions consume the fragment into composeInputState instead, so the actual
++        /// editable body (including its blockquote) persists and synchronizes through standard draft storage.
++        /// Cancelling a reply removes the relation, not user-editable body text; remove that text in the composer.
++        public var voiceFragment: VoiceReplyFragment?
+         
+-        public init(messageId: EngineMessage.Id, quote: EngineMessageReplyQuote?, innerSubject: EngineMessageReplyInnerSubject?) {
++        public init(messageId: EngineMessage.Id, quote: EngineMessageReplyQuote?, innerSubject: EngineMessageReplyInnerSubject?, voiceFragment: VoiceReplyFragment? = nil) {
+             self.messageId = messageId
+             self.quote = quote
+             self.innerSubject = innerSubject
++            self.voiceFragment = voiceFragment
+         }
+         
+         public var subjectModel: EngineMessageReplySubject {
+diff --git a/submodules/Media/LocalAudioTranscription/Sources/LocalAudioTranscription.swift b/submodules/Media/LocalAudioTranscription/Sources/LocalAudioTranscription.swift
+index 243b6220..848bce84 100644
+--- a/submodules/Media/LocalAudioTranscription/Sources/LocalAudioTranscription.swift
++++ b/submodules/Media/LocalAudioTranscription/Sources/LocalAudioTranscription.swift
+@@ -4,19 +4,54 @@ import Speech
+ 
+ private var sharedRecognizers: [String: NSObject] = [:]
+ 
++/// A recognised word with its position in the audio, in seconds.
++public struct LocallyTimedWord {
++    public var text: String
++    public var start: Double
++    public var end: Double
++
++    public init(text: String, start: Double, end: Double) {
++        self.text = text
++        self.start = start
++        self.end = end
++    }
++}
++
+ private struct TranscriptionResult {
+     var text: String
+     var confidence: Float
+     var isFinal: Bool
++    var words: [LocallyTimedWord]
+ }
+ 
+ private func transcribeAudio(path: String, locale: String) -> Signal<TranscriptionResult?, NoError> {
+     return Signal { subscriber in
+-        let disposable = MetaDisposable()
++        // Speech callbacks and file/task ownership are serialized on main. Cancellation
++        // is marked immediately, including while the authorization prompt is pending.
++        let lock = NSLock()
++        var cancelled = false
++        var finished = false
++        var task: SFSpeechRecognitionTask?
++        var temporaryPath: String?
++        let isCancelled: () -> Bool = {
++            lock.lock()
++            defer { lock.unlock() }
++            return cancelled
++        }
++        let cleanup: () -> Void = {
++            finished = true
++            task?.cancel()
++            task = nil
++            if let path = temporaryPath {
++                temporaryPath = nil
++                try? FileManager.default.removeItem(atPath: path)
++            }
++        }
+         
+         if #available(iOS 13.0, *) {
+             SFSpeechRecognizer.requestAuthorization { status in
+                 Queue.mainQueue().async {
++                    guard !isCancelled(), !finished else { return }
+                     switch status {
+                     case .notDetermined:
+                         subscriber.putNext(nil)
+@@ -41,48 +76,77 @@ private func transcribeAudio(path: String, locale: String) -> Signal<Transcripti
+                             speechRecognizerValue.defaultTaskHint = .dictation
+                             sharedRecognizers[locale] = speechRecognizerValue
+                             speechRecognizer = speechRecognizerValue
+-                            
+-                            if locale == "en-US" {
+-                                speechRecognizer.supportsOnDeviceRecognition = true
+-                            } else {
+-                                speechRecognizer.supportsOnDeviceRecognition = false
+-                            }
+-                            speechRecognizer.supportsOnDeviceRecognition = true
++                            // Preserve the runtime's capability result. Forcing this to true
++                            // makes requests require an on-device service that may not exist,
++                            // particularly in Simulator or for an unsupported locale.
+                         }
+                         
+-                        let tempFilePath = NSTemporaryDirectory() + "/\(UInt64.random(in: 0 ... UInt64.max)).m4a"
+-                        let _ = try? FileManager.default.copyItem(atPath: path, toPath: tempFilePath)
++                        let tempFilePath = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("speech-\(UUID().uuidString).m4a").path
++                        temporaryPath = tempFilePath
++                        do {
++                            try FileManager.default.copyItem(atPath: path, toPath: tempFilePath)
++                        } catch {
++                            // copyItem can leave a partial destination. Never remove the input.
++                            cleanup()
++                            subscriber.putNext(nil)
++                            subscriber.putCompletion()
++                            return
++                        }
++                        guard !isCancelled() else {
++                            cleanup()
++                            return
++                        }
+                         
+                         let request = SFSpeechURLRecognitionRequest(url: URL(fileURLWithPath: tempFilePath))
+                         if #available(iOS 16.0, *) {
+                             request.addsPunctuation = true
+                         }
++                        #if targetEnvironment(simulator)
++                        // Simulator speech runtimes can report on-device support while their
++                        // recognition assets are absent. Permit Apple's network recognizer there.
++                        request.requiresOnDeviceRecognition = false
++                        #else
+                         request.requiresOnDeviceRecognition = speechRecognizer.supportsOnDeviceRecognition
++                        #endif
+                         request.shouldReportPartialResults = false
+                         
+-                        let task = speechRecognizer.recognitionTask(with: request, resultHandler: { result, error in
+-                            if let result = result {
+-                                var confidence: Float = 0.0
+-                                for segment in result.bestTranscription.segments {
+-                                    confidence += segment.confidence
++                        task = speechRecognizer.recognitionTask(with: request, resultHandler: { result, error in
++                            Queue.mainQueue().async {
++                                guard !isCancelled(), !finished else { return }
++                                if error != nil {
++                                    cleanup()
++                                    subscriber.putNext(nil)
++                                    subscriber.putCompletion()
++                                    return
+                                 }
+-                                confidence /= Float(result.bestTranscription.segments.count)
+-                                subscriber.putNext(TranscriptionResult(text: result.bestTranscription.formattedString, confidence: confidence, isFinal: result.isFinal))
+-                                
+-                                if result.isFinal {
++                                if let result = result {
++                                    var confidence: Float = 0.0
++                                    for segment in result.bestTranscription.segments {
++                                        confidence += segment.confidence
++                                    }
++                                    if !result.bestTranscription.segments.isEmpty {
++                                        confidence /= Float(result.bestTranscription.segments.count)
++                                    }
++                                    let words = result.bestTranscription.segments.map { segment -> LocallyTimedWord in
++                                        return LocallyTimedWord(text: segment.substring, start: segment.timestamp, end: segment.timestamp + segment.duration)
++                                    }
++                                    if result.isFinal {
++                                        cleanup()
++                                    }
++                                    subscriber.putNext(TranscriptionResult(text: result.bestTranscription.formattedString, confidence: confidence, isFinal: result.isFinal, words: words))
++
++                                    if result.isFinal {
++                                        subscriber.putCompletion()
++                                    }
++                                } else {
++                                    cleanup()
++                                    print("transcribeAudio: locale: \(locale), error: \(String(describing: error))")
++
++                                    subscriber.putNext(nil)
+                                     subscriber.putCompletion()
+                                 }
+-                            } else {
+-                                print("transcribeAudio: locale: \(locale), error: \(String(describing: error))")
+-                                
+-                                subscriber.putNext(nil)
+-                                subscriber.putCompletion()
+                             }
+                         })
+-                        
+-                        disposable.set(ActionDisposable {
+-                            task.cancel()
+-                        })
+                     @unknown default:
+                         subscriber.putNext(nil)
+                         subscriber.putCompletion()
+@@ -94,7 +158,14 @@ private func transcribeAudio(path: String, locale: String) -> Signal<Transcripti
+             subscriber.putCompletion()
+         }
+         
+-        return disposable
++        return ActionDisposable {
++            lock.lock()
++            cancelled = true
++            lock.unlock()
++            Queue.mainQueue().async {
++                cleanup()
++            }
++        }
+     }
+     |> runOn(.mainQueue())
+ }
+@@ -104,15 +175,9 @@ public struct LocallyTranscribedAudio {
+     public var isFinal: Bool
+ }
+ 
+-public func transcribeAudio(path: String, appLocale: String) -> Signal<LocallyTranscribedAudio?, NoError> {
++/// Recognises the audio in each locale and keeps the most confident result.
++private func bestTranscription(path: String, locales: [String]) -> Signal<TranscriptionResult?, NoError> {
+     var signals: [Signal<TranscriptionResult?, NoError>] = []
+-    var locales: [String] = []
+-    if !locales.contains(Locale.current.identifier) {
+-        locales.append(Locale.current.identifier)
+-    }
+-    if locales.isEmpty {
+-        locales.append("en-US")
+-    }
+     for locale in locales {
+         signals.append(transcribeAudio(path: path, locale: locale))
+     }
+@@ -126,12 +191,39 @@ public func transcribeAudio(path: String, appLocale: String) -> Signal<LocallyTr
+     }
+     
+     return resultSignal
+-    |> map { results -> LocallyTranscribedAudio? in
++    |> map { results -> TranscriptionResult? in
+         let sortedResults = results.compactMap({ $0 }).sorted(by: { lhs, rhs in
+             return lhs.confidence > rhs.confidence
+         })
+-        return sortedResults.first.flatMap { result -> LocallyTranscribedAudio in
++        return sortedResults.first
++    }
++}
++
++public func transcribeAudio(path: String, appLocale: String) -> Signal<LocallyTranscribedAudio?, NoError> {
++    var locales: [String] = []
++    if !locales.contains(Locale.current.identifier) {
++        locales.append(Locale.current.identifier)
++    }
++    if locales.isEmpty {
++        locales.append("en-US")
++    }
++
++    return bestTranscription(path: path, locales: locales)
++    |> map { result -> LocallyTranscribedAudio? in
++        return result.flatMap { result -> LocallyTranscribedAudio in
+             return LocallyTranscribedAudio(text: result.text, isFinal: result.isFinal)
+         }
+     }
+ }
++
++/// The same recognition, but the result is the words with the time each one is spoken. Nil when recognition is
++/// unavailable (no permission, unsupported language) or found no speech.
++public func transcribeAudioWithTimings(path: String, locales: [String]) -> Signal<[LocallyTimedWord]?, NoError> {
++    return bestTranscription(path: path, locales: locales)
++    |> map { result -> [LocallyTimedWord]? in
++        guard let result, !result.words.isEmpty else {
++            return nil
++        }
++        return result.words
++    }
++}
+diff --git a/submodules/MediaPlayer/Sources/FFMpegMediaFrameSourceContext.swift b/submodules/MediaPlayer/Sources/FFMpegMediaFrameSourceContext.swift
+index 82e8c5a..b89988a 100644
+--- a/submodules/MediaPlayer/Sources/FFMpegMediaFrameSourceContext.swift
++++ b/submodules/MediaPlayer/Sources/FFMpegMediaFrameSourceContext.swift
+@@ -698,23 +698,43 @@ final class FFMpegMediaFrameSourceContext: NSObject {
+             var actualPts: CMTime = CMTimeMake(value: 0, timescale: 1)
+             var extraVideoFrames: [MediaTrackDecodableFrame] = []
+             if timestamp.isZero || initializedState.videoStream == nil {
+-                for _ in 0 ..< 24 {
++                // An audio-only stream is sought to the nearest point at or before the target, which for a voice message
++                // can be well over a second early. Packets that end before the target are skipped, so playback (and the
++                // reported position) starts where it was asked to, to within a packet.
++                var skipUntilPts: CMTime?
++                if initializedState.videoStream == nil, let audioStream = initializedState.audioStream, !timestamp.isZero {
++                    skipUntilPts = CMTimeMakeWithSeconds(max(0.0, timestamp - 0.04), preferredTimescale: audioStream.timebase.timescale)
++                }
++                var lastSkippedPacket: (packet: FFMpegPacket, pts: CMTime)?
++                var foundPacket = false
++                for _ in 0 ..< (skipUntilPts != nil ? 4000 : 24) {
+                     if let packet = self.readPacketInternal() {
+                         if let videoStream = initializedState.videoStream, Int(packet.streamIndex) == videoStream.index {
+                             self.packetQueue.append(packet)
+                             let pts = CMTimeMake(value: packet.pts, timescale: videoStream.timebase.timescale)
+                             actualPts = pts
++                            foundPacket = true
+                             break
+                         } else if let audioStream = initializedState.audioStream, Int(packet.streamIndex) == audioStream.index {
+-                            self.packetQueue.append(packet)
+                             let pts = CMTimeMake(value: packet.pts, timescale: audioStream.timebase.timescale)
++                            if let skipUntilPts, CMTimeCompare(pts, skipUntilPts) < 0 {
++                                lastSkippedPacket = (packet, pts)
++                                continue
++                            }
++                            self.packetQueue.append(packet)
+                             actualPts = pts
++                            foundPacket = true
+                             break
+                         }
+                     } else {
+                         break
+                     }
+                 }
++                // The target is past the last packet: play that one rather than nothing.
++                if !foundPacket, let lastSkippedPacket {
++                    self.packetQueue.append(lastSkippedPacket.packet)
++                    actualPts = lastSkippedPacket.pts
++                }
+             } else if let videoStream = initializedState.videoStream {
+                 let targetPts = CMTimeMakeWithSeconds(Float64(timestamp), preferredTimescale: videoStream.timebase.timescale)
+                 let limitPts = CMTimeMakeWithSeconds(Float64(timestamp + 0.5), preferredTimescale: videoStream.timebase.timescale)
+diff --git a/submodules/TelegramCore/Sources/TelegramEngine/Messages/Translate.swift b/submodules/TelegramCore/Sources/TelegramEngine/Messages/Translate.swift
+index d53a1f4..e3a3098 100644
+--- a/submodules/TelegramCore/Sources/TelegramEngine/Messages/Translate.swift
++++ b/submodules/TelegramCore/Sources/TelegramEngine/Messages/Translate.swift
+@@ -847,6 +847,11 @@ extension TelegramComposeAIMessageMode.CloudStyle.Reference {
+     }
+ }
+ 
++#if DEBUG
++/// What the server said the last time an AI compose request failed with a plain "generic" error. For finding out why, in debug builds.
++public var telegramAIComposeLastErrorDescription: String?
++#endif
++
+ public enum TelegramAIComposeMessageError {
+     case generic
+     case nonPremiumFlood
+@@ -891,6 +896,9 @@ func _internal_composeAIMessage(account: Account, text: ComposedRichMessage, mod
+             if error.errorDescription == "AICOMPOSE_FLOOD_PREMIUM" {
+                 return .fail(.nonPremiumFlood)
+             } else {
++                #if DEBUG
++                telegramAIComposeLastErrorDescription = error.errorDescription
++                #endif
+                 return .fail(.generic)
+             }
+         }
+@@ -920,6 +928,9 @@ func _internal_composeAIMessage(account: Account, text: ComposedRichMessage, mod
+             if error.errorDescription == "AICOMPOSE_FLOOD_PREMIUM" {
+                 return .fail(.nonPremiumFlood)
+             } else {
++                #if DEBUG
++                telegramAIComposeLastErrorDescription = error.errorDescription
++                #endif
+                 return .fail(.generic)
+             }
+         }
+@@ -961,6 +972,9 @@ func _internal_composeAIMessage(account: Account, text: ComposedRichMessage, mod
+             if error.errorDescription == "AICOMPOSE_FLOOD_PREMIUM" {
+                 return .fail(.nonPremiumFlood)
+             } else {
++                #if DEBUG
++                telegramAIComposeLastErrorDescription = error.errorDescription
++                #endif
+                 return .fail(.generic)
+             }
+         }
+diff --git a/submodules/TelegramUI/BUILD b/submodules/TelegramUI/BUILD
+index 8873646..43a5f72 100644
+--- a/submodules/TelegramUI/BUILD
++++ b/submodules/TelegramUI/BUILD
+@@ -541,6 +541,7 @@ swift_library(
+         "//submodules/TelegramUI/Components/NavigationBarImpl",
+         "//submodules/TelegramUI/Components/GlobalControlPanelsContext",
+         "//submodules/TelegramUI/Components/MediaPlaybackHeaderPanelComponent",
++        "//submodules/TelegramUI/Components/VoiceTranscriptScreen",
+         "//submodules/TelegramUI/Components/LiveLocationHeaderPanelComponent",
+         "//submodules/TelegramUI/Components/TranslateHeaderPanelComponent",
+         "//submodules/TelegramUI/Components/AdPanelHeaderPanelComponent",
+diff --git a/submodules/TelegramUI/Components/Chat/ChatInputMessageAccessoryPanel/Sources/ChatInputMessageAccessoryPanel.swift b/submodules/TelegramUI/Components/Chat/ChatInputMessageAccessoryPanel/Sources/ChatInputMessageAccessoryPanel.swift
+index f2f24c2..7542fdb 100644
+--- a/submodules/TelegramUI/Components/Chat/ChatInputMessageAccessoryPanel/Sources/ChatInputMessageAccessoryPanel.swift
++++ b/submodules/TelegramUI/Components/Chat/ChatInputMessageAccessoryPanel/Sources/ChatInputMessageAccessoryPanel.swift
+@@ -99,6 +99,46 @@ private func textStringForForwardedMessage(_ message: EngineMessage, strings: Pr
+     return (NSAttributedString(string: message.text), message._asMessage().textEntitiesAttribute?.entities ?? [], false)
+ }
+ 
++/// The time block of a reply to part of a voice message: 18pt tall with 6pt on each side, a 12pt play icon, 2pt, then the
++/// time in 12pt text (a 16pt line), all in the given colour (the panel's accent colour, so it follows the theme) on a 10%
++/// background of the same colour.
++private func generateVoiceReplyTimeChip(text: String, color: UIColor) -> UIImage? {
++    let height: CGFloat = 18.0
++    let padding: CGFloat = 6.0
++    let iconSize: CGFloat = 12.0
++    let gap: CGFloat = 2.0
++    let lineHeight: CGFloat = 16.0
++
++    let paragraph = NSMutableParagraphStyle()
++    paragraph.minimumLineHeight = lineHeight
++    paragraph.maximumLineHeight = lineHeight
++    let font = Font.regular(12.0)
++    let attributedText = NSAttributedString(string: text, attributes: [
++        .font: font,
++        .foregroundColor: color,
++        .paragraphStyle: paragraph,
++        .baselineOffset: (lineHeight - font.lineHeight) / 4.0
++    ])
++    let textWidth = ceil(attributedText.boundingRect(with: CGSize(width: 1000.0, height: lineHeight), options: [.usesLineFragmentOrigin], context: nil).width)
++    let size = CGSize(width: padding + iconSize + gap + textWidth + padding, height: height)
++
++    return generateImage(size, rotatedContext: { size, context in
++        context.clear(CGRect(origin: CGPoint(), size: size))
++        context.setFillColor(color.withAlphaComponent(0.1).cgColor)
++        context.addPath(UIBezierPath(roundedRect: CGRect(origin: CGPoint(), size: size), cornerRadius: size.height / 2.0).cgPath)
++        context.fillPath()
++
++        UIGraphicsPushContext(context)
++        if let symbol = UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 40.0, weight: .regular))?.withTintColor(color, renderingMode: .alwaysOriginal) {
++            let scale = min(iconSize / symbol.size.width, iconSize / symbol.size.height)
++            let iconFrame = CGRect(x: padding, y: floor((size.height - symbol.size.height * scale) / 2.0), width: symbol.size.width * scale, height: symbol.size.height * scale)
++            symbol.draw(in: iconFrame)
++        }
++        attributedText.draw(in: CGRect(x: padding + iconSize + gap, y: floor((size.height - lineHeight) / 2.0), width: textWidth + 2.0, height: lineHeight))
++        UIGraphicsPopContext()
++    })
++}
++
+ public final class ChatInputMessageAccessoryPanel: Component {
+     public typealias EnvironmentType = ChatInputAccessoryPanelEnvironment
+ 
+@@ -108,12 +148,17 @@ public final class ChatInputMessageAccessoryPanel: Component {
+             public let quote: EngineMessageReplyQuote?
+             public let innerSubject: EngineMessageReplyInnerSubject?
+             public let message: EngineMessage?
++            /// For a reply to part of a voice message: the time it covers ("0:27 - 0:32") and the chosen words.
++            public let voiceTimeText: String?
++            public let voiceText: String?
+ 
+-            public init(id: EngineMessage.Id, quote: EngineMessageReplyQuote?, innerSubject: EngineMessageReplyInnerSubject?, message: EngineMessage?) {
++            public init(id: EngineMessage.Id, quote: EngineMessageReplyQuote?, innerSubject: EngineMessageReplyInnerSubject?, message: EngineMessage?, voiceTimeText: String? = nil, voiceText: String? = nil) {
+                 self.id = id
+                 self.quote = quote
+                 self.innerSubject = innerSubject
+                 self.message = message
++                self.voiceTimeText = voiceTimeText
++                self.voiceText = voiceText
+             }
+ 
+             public static func ==(lhs: Reply, rhs: Reply) -> Bool {
+@@ -126,6 +171,9 @@ public final class ChatInputMessageAccessoryPanel: Component {
+                 if lhs.innerSubject != rhs.innerSubject {
+                     return false
+                 }
++                if lhs.voiceTimeText != rhs.voiceTimeText || lhs.voiceText != rhs.voiceText {
++                    return false
++                }
+                 if lhs.message?.id != rhs.message?.id {
+                     return false
+                 }
+@@ -674,6 +722,15 @@ public final class ChatInputMessageAccessoryPanel: Component {
+                         }
+                     }
+                 }
++                // A reply to part of a voice message: the time it covers sits next to the title, and the chosen words are
++                // the text under it.
++                if let voiceTimeText = reply.voiceTimeText, !voiceTimeText.isEmpty, let chip = generateVoiceReplyTimeChip(text: voiceTimeText, color: environment.theme.chat.inputPanel.panelControlAccentColor) {
++                    // The title's text is about 17pt tall, so the 18pt block starts half a point above it to share its centre.
++                    titleText.append(.icon(chip, CGPoint(x: 0.0, y: -3.8)))
++                }
++                if let voiceText = reply.voiceText, !voiceText.isEmpty {
++                    textString = NSAttributedString(string: voiceText, font: Font.regular(14.0), textColor: environment.theme.chat.inputPanel.primaryTextColor)
++                }
+                 textString = renderInstantPagePreviewIcons(textString, font: Font.regular(14.0), textColor: environment.theme.chat.inputPanel.primaryTextColor)
+             case let .forward(forward):
+                 var title = ""
+diff --git a/submodules/TelegramUI/Components/Chat/ChatMessageInteractiveFileNode/Sources/ChatMessageInteractiveFileNode.swift b/submodules/TelegramUI/Components/Chat/ChatMessageInteractiveFileNode/Sources/ChatMessageInteractiveFileNode.swift
+index 21291a5..dd62f5c 100644
+--- a/submodules/TelegramUI/Components/Chat/ChatMessageInteractiveFileNode/Sources/ChatMessageInteractiveFileNode.swift
++++ b/submodules/TelegramUI/Components/Chat/ChatMessageInteractiveFileNode/Sources/ChatMessageInteractiveFileNode.swift
+@@ -347,6 +347,41 @@ public final class ChatMessageInteractiveFileNode: ASDisplayNode {
+         }
+     }
+     
++    private func openVoiceTranscript() {
++        guard let arguments = self.arguments,
++              arguments.file.isVoice, !arguments.file.isInstantVideo,
++              !Namespaces.Message.allNonRegular.contains(arguments.message.id.namespace),
++              arguments.message.id.peerId.namespace != Namespaces.Peer.SecretChat,
++              arguments.message.minAutoremoveOrClearTimeout != viewOnceTimeout,
++              !arguments.presentationData.isPreview, !arguments.isRecentActions,
++              !arguments.message.flags.isSending, arguments.attributes.updatingMedia == nil,
++              arguments.messageSelection == nil,
++              let navigationController = arguments.controllerInteraction.navigationController() else {
++            return
++        }
++
++        // A playback status belongs to this message, including when paused. Do not
++        // toggle or restart it just to open the transcript. Otherwise use the same
++        // opener as the play button to select this message and initialize playback.
++        switch self.resourceStatus?.mediaStatus {
++        case .playbackStatus?:
++            break
++        default:
++            guard arguments.controllerInteraction.openMessage(arguments.message, OpenMessageParams(mode: .default)) else {
++                return
++            }
++        }
++
++        let context = arguments.context
++        let presentationData = context.sharedContext.currentPresentationData.with { $0 }
++        let peer = arguments.message.author ?? arguments.message.peers[arguments.message.id.peerId]
++        let peerTitle = peer.map { EnginePeer($0).displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder) } ?? ""
++        let controller = context.sharedContext.makeVoiceTranscriptScreen(context: context, messageId: arguments.message.id, peerTitle: peerTitle)
++        self.view.window?.endEditing(true)
++        controller.navigationPresentation = .flatModal
++        navigationController.pushViewController(controller, animated: true)
++    }
++
+     private func transcribe() {
+         guard let arguments = self.arguments, let context = self.context, let message = self.message else {
+             return
+@@ -766,6 +801,7 @@ public final class ChatMessageInteractiveFileNode: ASDisplayNode {
+                 var textString: NSAttributedString?
+                 var updatedAudioTranscriptionState: AudioTranscriptionButtonComponent.TranscriptionState?
+                 
++                let opensVoiceTranscript = arguments.file.isVoice && !isInstantVideo
+                 var displayTranscribe = false
+                 if Namespaces.Message.allNonRegular.contains(arguments.message.id.namespace) {
+                     displayTranscribe = false
+@@ -788,6 +824,16 @@ public final class ChatMessageInteractiveFileNode: ASDisplayNode {
+                     }
+                 }
+                 
++                // The sheet has its own loading/unavailable states, so its entry
++                // point must not depend on the inline transcription trial quota.
++                if opensVoiceTranscript {
++                    displayTranscribe = !Namespaces.Message.allNonRegular.contains(arguments.message.id.namespace)
++                        && arguments.message.id.peerId.namespace != Namespaces.Peer.SecretChat
++                        && !isViewOnceMessage && !arguments.presentationData.isPreview
++                        && !arguments.isRecentActions && !arguments.message.flags.isSending
++                        && arguments.attributes.updatingMedia == nil && arguments.messageSelection == nil
++                }
++
+                 let transcribedText = forcedAudioTranscriptionText ?? transcribedText(message: EngineMessage(arguments.message))
+                 
+                 switch audioTranscriptionState {
+@@ -1360,17 +1406,24 @@ public final class ChatMessageInteractiveFileNode: ASDisplayNode {
+                                         transition: animation.isAnimated ? .easeInOut(duration: 0.3) : .immediate,
+                                         component: AnyComponent(AudioTranscriptionButtonComponent(
+                                             theme: buttonTheme,
+-                                            transcriptionState: effectiveAudioTranscriptionState,
++                                            transcriptionState: opensVoiceTranscript ? .collapsed : effectiveAudioTranscriptionState,
+                                             pressed: {
+                                                 guard let strongSelf = self else {
+                                                     return
+                                                 }
+-                                                strongSelf.transcribe()
++                                                // Read current arguments: component equality does not
++                                                // include the callback, and this node can be reused.
++                                                if let file = strongSelf.arguments?.file, file.isVoice && !file.isInstantVideo {
++                                                    strongSelf.openVoiceTranscript()
++                                                } else {
++                                                    strongSelf.transcribe()
++                                                }
+                                             }
+                                         )),
+                                         environment: {},
+                                         containerSize: CGSize(width: 30.0, height: 30.0)
+                                     )
++                                    audioTranscriptionButton.componentView?.accessibilityLabel = opensVoiceTranscript ? arguments.presentationData.strings.VoiceTranscript_OpenTranscript : nil
+                                     
+                                     let audioTranscriptionButtonFrame = CGRect(origin: CGPoint(x: boundingWidth - 30.0 + 3.0, y: -6.0), size: audioTranscriptionButtonSize)
+                                     if added {
+diff --git a/submodules/TelegramUI/Components/MediaPlaybackHeaderPanelComponent/Sources/MediaPlaybackHeaderPanelComponent.swift b/submodules/TelegramUI/Components/MediaPlaybackHeaderPanelComponent/Sources/MediaPlaybackHeaderPanelComponent.swift
+index 8acf74a..546fdf2 100644
+--- a/submodules/TelegramUI/Components/MediaPlaybackHeaderPanelComponent/Sources/MediaPlaybackHeaderPanelComponent.swift
++++ b/submodules/TelegramUI/Components/MediaPlaybackHeaderPanelComponent/Sources/MediaPlaybackHeaderPanelComponent.swift
+@@ -369,6 +369,22 @@ public final class MediaPlaybackHeaderPanelComponent: Component {
+                                 default:
+                                     break
+                                 }
++                            } else if case .voice = component.data.kind {
++                                var peerTitle = ""
++                                if let displayData = component.data.item.displayData, case let .voice(author, _) = displayData, let author {
++                                    let presentationData = component.context.sharedContext.currentPresentationData.with { $0 }
++                                    peerTitle = author.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)
++                                }
++                                let controllerContext: AccountContext
++                                if component.data.account.id == component.context.account.id {
++                                    controllerContext = component.context
++                                } else {
++                                    controllerContext = component.context.sharedContext.makeTempAccountContext(account: component.data.account)
++                                }
++                                let transcriptController = component.context.sharedContext.makeVoiceTranscriptScreen(context: controllerContext, messageId: id.messageId, peerTitle: peerTitle)
++                                self.window?.endEditing(true)
++                                transcriptController.navigationPresentation = .flatModal
++                                controller.push(transcriptController)
+                             } else {
+                                 component.context.sharedContext.navigateToChat(accountId: component.context.account.id, peerId: id.messageId.peerId, messageId: id.messageId)
+                             }
+diff --git a/submodules/TelegramUI/Components/TextProcessingScreen/Sources/TextProcessingScreen.swift b/submodules/TelegramUI/Components/TextProcessingScreen/Sources/TextProcessingScreen.swift
+index 21f7d3b..468d0af 100644
+--- a/submodules/TelegramUI/Components/TextProcessingScreen/Sources/TextProcessingScreen.swift
++++ b/submodules/TelegramUI/Components/TextProcessingScreen/Sources/TextProcessingScreen.swift
+@@ -1600,7 +1600,7 @@ private final class TextProcessingSheetComponent: Component {
+                             dismiss(true)
+                         }
+                     }
+-                case let .translate(_, applyResult):
++                case let .translate(_, applyResult, _):
+                     if let applyResult {
+                         actionButtonTitle = environmentValue.strings.TextProcessing_ActionApply
+                         isMainActionEnabled = !self.contentExternalState.isProcessing && self.contentExternalState.result != nil
+@@ -1725,18 +1725,25 @@ private final class TextProcessingSheetComponent: Component {
+             }
+ 
+             var displayInfoButton = true
++            // The top edge effect stays when only the information button is left out.
++            var hasTopEdgeEffect = true
+             let titleString: String
+             switch component.mode {
+             case .edit:
+                 titleString = environmentValue.strings.TextProcessing_TitleEdit
+-            case .translate:
++            case let .translate(_, _, displaysInfoButton):
+                 titleString = environmentValue.strings.TextProcessing_TitleTranslate
++                if !displaysInfoButton {
++                    displayInfoButton = false
++                }
+             case .preview:
+                 titleString = ""
+                 displayInfoButton = false
++                hasTopEdgeEffect = false
+             case .generate:
+                 titleString = environmentValue.strings.TextProcessing_TitleAICompose
+                 displayInfoButton = false
++                hasTopEdgeEffect = false
+             }
+             
+ 
+@@ -1893,7 +1900,7 @@ private final class TextProcessingSheetComponent: Component {
+                             }
+                         )
+                     ) : nil,
+-                    hasTopEdgeEffect: displayInfoButton,
++                    hasTopEdgeEffect: hasTopEdgeEffect,
+                     bottomItem: AnyComponent(
+                         ActionButtonsComponent(
+                             theme: theme,
+diff --git a/submodules/TelegramUI/Sources/Chat/ChatControllerLoadDisplayNode.swift b/submodules/TelegramUI/Sources/Chat/ChatControllerLoadDisplayNode.swift
+index a017f15..2e41c14 100644
+--- a/submodules/TelegramUI/Sources/Chat/ChatControllerLoadDisplayNode.swift
++++ b/submodules/TelegramUI/Sources/Chat/ChatControllerLoadDisplayNode.swift
+@@ -1686,6 +1686,22 @@ extension ChatControllerImpl {
+             }
+             
+             if let messageId = messageId {
++                // Consume only at the explicit transcript Quote action's reply setup, not at send time.
++                // Both setupReply(toMessageId:) and the asynchronous history setupReply callback land here.
++                let voiceFragment = VoiceReplyFragmentStore.shared.take(for: messageId, accountId: strongSelf.context.account.id.int64)
++                if voiceFragment != nil {
++                    guard messageId.peerId.namespace != Namespaces.Peer.SecretChat,
++                          let message = strongSelf.chatDisplayNode.historyNode.messageInCurrentHistoryView(messageId)?._asMessage(),
++                          !message.isCopyProtected(),
++                          !strongSelf.presentationInterfaceState.copyProtectionEnabled,
++                          !strongSelf.presentationInterfaceState.myCopyProtectionEnabled,
++                          message.minAutoremoveOrClearTimeout != viewOnceTimeout,
++                          strongSelf.presentationInterfaceState.interfaceState.editMessage == nil else {
++                        strongSelf.presentVoiceReplyDraftError()
++                        completion(.immediate, {})
++                        return
++                    }
++                }
+                 let intrinsicCanSendMessagesHere = canSendMessagesToChat(strongSelf.presentationInterfaceState)
+                 var canSendMessagesHere = intrinsicCanSendMessagesHere
+                 if case .standard(.embedded) = strongSelf.presentationInterfaceState.mode {
+@@ -1698,8 +1714,25 @@ extension ChatControllerImpl {
+                 if canSendMessagesHere {
+                     let _ = strongSelf.presentVoiceMessageDiscardAlert(action: {
+                         if let message = strongSelf.chatDisplayNode.historyNode.messageInCurrentHistoryView(messageId)?._asMessage() {
++                            var inputState = strongSelf.presentationInterfaceState.interfaceState.composeInputState
++                            if let voiceFragment {
++                                // The discard confirmation can complete asynchronously. Recheck against
++                                // the current composer/message, not the state from when Quote was pressed.
++                                guard strongSelf.presentationInterfaceState.interfaceState.editMessage == nil,
++                                      !message.isCopyProtected(),
++                                      !strongSelf.presentationInterfaceState.copyProtectionEnabled,
++                                      !strongSelf.presentationInterfaceState.myCopyProtectionEnabled,
++                                      message.id.peerId.namespace != Namespaces.Peer.SecretChat,
++                                      message.minAutoremoveOrClearTimeout != viewOnceTimeout,
++                                      let updatedInputState = voiceReplyInputState(inputState: inputState, fragment: voiceFragment) else {
++                                    strongSelf.presentVoiceReplyDraftError()
++                                    completion(.immediate, {})
++                                    return
++                                }
++                                inputState = updatedInputState
++                            }
+                             strongSelf.updateChatPresentationInterfaceState(animated: true, interactive: true, { $0.updatedInterfaceState({
+-                                $0.withUpdatedReplyMessageSubject(ChatInterfaceState.ReplyMessageSubject(
++                                $0.withUpdatedComposeInputState(inputState).withUpdatedReplyMessageSubject(ChatInterfaceState.ReplyMessageSubject(
+                                     messageId: message.id,
+                                     quote: nil,
+                                     innerSubject: innerSubject
+@@ -1723,6 +1756,13 @@ extension ChatControllerImpl {
+                         completion(.immediate, {})
+                     }, delay: true)
+                 } else {
++                    // Do not move transcript text into another chat's draft implicitly. Ordinary replies
++                    // keep their existing move-to-chat behavior; transcript quotes require a writable composer.
++                    if voiceFragment != nil {
++                        strongSelf.presentVoiceReplyDraftError()
++                        completion(.immediate, {})
++                        return
++                    }
+                     let replySubject = ChatInterfaceState.ReplyMessageSubject(
+                         messageId: messageId,
+                         quote: nil,
+@@ -5720,3 +5754,55 @@ extension ChatControllerImpl {
+         }
+     }
+ }
++
++/// Editable message-body quote, NOT MTProto reply quote_text: an audio transcript is not message.text.
++/// The ordinary reply relation is installed separately. Nothing here sends a message or mutates the source.
++/// 4096 UTF-16 units is the existing text composer limit in this host; refuse, never silently truncate.
++func voiceReplyInputState(inputState: ChatTextInputState, fragment: VoiceReplyFragment) -> ChatTextInputState? {
++    guard !fragment.timeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
++          !fragment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
++        return nil
++    }
++    let text = "\(fragment.timeText) — \(fragment.text)"
++    let prefixLength = (text as NSString).length + 2
++    let existingLength = expandedInputStateAttributedString(inputState.inputText).length
++    guard prefixLength <= 4096, existingLength <= 4096 - prefixLength else {
++        return nil
++    }
++
++    let quote = NSAttributedString(string: text, attributes: [
++        ChatTextInputAttributes.block: ChatTextInputTextQuoteAttribute(kind: .quote, isCollapsed: false)
++    ])
++    var quoteContent = ChatTextInputState(inputText: quote).content
++    // This pinned host's legacy attributed-string importer may flatten block attributes. Keep the
++    // prefix a real blockquote even on that bridge; never round-trip the EXISTING draft through it.
++    if quoteContent.blocks.count != 1 || !voiceReplyIsBlockQuote(quoteContent.blocks[0]) {
++        quoteContent = ChatInputContent(blocks: [.blockQuote(ChatInputBlockQuote(
++            content: ChatTextInputState(inputText: NSAttributedString(string: text)).content,
++            collapsed: false
++        ))])
++    }
++    var content = inputState.content
++    if content.blocks.isEmpty {
++        content.blocks = [.paragraph(ChatInputParagraph(runs: []))]
++    }
++    // Block separators supply exactly `${time} — ${text}\n\n` before the untouched original blocks.
++    content.blocks.insert(contentsOf: quoteContent.blocks + [.paragraph(ChatInputParagraph(runs: []))], at: 0)
++    let selection = inputState.selectionRange
++    return ChatTextInputState(content: content, selectionRange: (selection.lowerBound + prefixLength) ..< (selection.upperBound + prefixLength))
++}
++
++private func voiceReplyIsBlockQuote(_ block: ChatInputBlock) -> Bool {
++    if case .blockQuote = block {
++        return true
++    }
++    return false
++}
++
++extension ChatControllerImpl {
++    fileprivate func presentVoiceReplyDraftError() {
++        self.present(textAlertController(context: self.context, updatedPresentationData: self.updatedPresentationData, title: nil,
++            text: "The transcript quote was not inserted. Use a writable, non-secret chat with a regular voice message, finish editing any message, and keep the quote plus draft within 4096 characters. Your existing draft and reply are unchanged.",
++            actions: [TextAlertAction(type: .defaultAction, title: self.presentationData.strings.Common_OK, action: {})]), in: .window(.root))
++    }
++}
+diff --git a/submodules/TelegramUI/Sources/ChatController.swift b/submodules/TelegramUI/Sources/ChatController.swift
+index 88472a6..fb2e4f8 100644
+--- a/submodules/TelegramUI/Sources/ChatController.swift
++++ b/submodules/TelegramUI/Sources/ChatController.swift
+@@ -11045,6 +11045,19 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
+         transition.updateSublayerTransformScale(node: self.chatDisplayNode.historyNode, scale: scale)
+     }
+     
++    public var accountId: AccountRecordId {
++        return self.context.account.id
++    }
++
++    public func setupReply(toMessageId messageId: EngineMessage.Id) -> Bool {
++        guard self.chatDisplayNode.historyNode.messageInCurrentHistoryView(messageId) != nil,
++              let interfaceInteraction = self.interfaceInteraction else {
++            return false
++        }
++        interfaceInteraction.setupReplyMessage(messageId, nil, { _, f in f() })
++        return true
++    }
++
+     public func restrictedSendingContentsText() -> String {
+         guard let peer = self.presentationInterfaceState.renderedPeer?.peer else {
+             return self.presentationData.strings.Chat_SendNotAllowedText
+diff --git a/submodules/TelegramUI/Sources/ChatInterfaceStateAccessoryPanels.swift b/submodules/TelegramUI/Sources/ChatInterfaceStateAccessoryPanels.swift
+index 2cdd37c..13933d8 100644
+--- a/submodules/TelegramUI/Sources/ChatInterfaceStateAccessoryPanels.swift
++++ b/submodules/TelegramUI/Sources/ChatInterfaceStateAccessoryPanels.swift
+@@ -219,7 +219,9 @@ func textInputAccessoryPanel(
+                     id: replyMessageSubject.messageId,
+                     quote: replyMessageSubject.quote,
+                     innerSubject: replyMessageSubject.innerSubject,
+-                    message: nil
++                    message: nil,
++                    voiceTimeText: replyMessageSubject.voiceFragment?.timeText,
++                    voiceText: replyMessageSubject.voiceFragment?.text
+                 )),
+                 chatPeerId: chatPeerId,
+                 action: { sourceView in
+diff --git a/submodules/TelegramUI/Sources/SharedAccountContext.swift b/submodules/TelegramUI/Sources/SharedAccountContext.swift
+index 478b8af..062e589 100644
+--- a/submodules/TelegramUI/Sources/SharedAccountContext.swift
++++ b/submodules/TelegramUI/Sources/SharedAccountContext.swift
+@@ -3,6 +3,7 @@ import UIKit
+ import AsyncDisplayKit
+ import Postbox
+ import TelegramCore
++import VoiceTranscriptScreen
+ import SwiftSignalKit
+ import WebProxyTransport
+ import Display
+@@ -1853,6 +1854,10 @@ public final class SharedAccountContextImpl: SharedAccountContext {
+         })
+     }
+     
++    public func makeVoiceTranscriptScreen(context: AccountContext, messageId: EngineMessage.Id, peerTitle: String) -> ViewController {
++        return VoiceTranscriptScreen(context: context, messageId: messageId, peerTitle: peerTitle)
++    }
++
+     public func makeOverlayAudioPlayerController(context: AccountContext, chatLocation: ChatLocation, type: MediaManagerPlayerType, initialMessageId: MessageId, initialOrder: MusicPlaybackSettingsOrder, playlistLocation: SharedMediaPlaylistLocation?, parentNavigationController: NavigationController?) -> ViewController & OverlayAudioPlayerController {
+         return OverlayAudioPlayerControllerImpl(context: context, chatLocation: chatLocation, type: type, initialMessageId: initialMessageId, initialOrder: initialOrder, playlistLocation: playlistLocation, parentNavigationController: parentNavigationController)
+     }
+diff --git a/submodules/TelegramUI/Sources/SharedMediaPlayer.swift b/submodules/TelegramUI/Sources/SharedMediaPlayer.swift
+index 740fdbc..c738773 100644
+--- a/submodules/TelegramUI/Sources/SharedMediaPlayer.swift
++++ b/submodules/TelegramUI/Sources/SharedMediaPlayer.swift
+@@ -124,6 +124,7 @@ final class SharedMediaPlayer {
+     private var proximityManagerIndex: Int?
+     private let controlPlaybackWithProximity: Bool
+     private var forceAudioToSpeaker = false
++    private var soundMuted = false
+     
+     private var stateDisposable: Disposable?
+     
+@@ -250,6 +251,9 @@ final class SharedMediaPlayer {
+                     }
+                     if let playbackItem = strongSelf.playbackItem {
+                         playbackItem.setForceAudioToSpeaker(strongSelf.forceAudioToSpeaker)
++                        if strongSelf.soundMuted, case let .audio(player) = playbackItem {
++                            player.setSoundMuted(soundMuted: true)
++                        }
+                         playbackItem.setActionAtEnd({
+                             Queue.mainQueue().async {
+                                 if let strongSelf = self {
+@@ -463,6 +467,12 @@ final class SharedMediaPlayer {
+                 self.playlist.setOrder(order)
+             case let .setLooping(looping):
+                 self.playlist.setLooping(looping)
++            case let .setSoundMuted(soundMuted):
++                // Playback and its clock keep running, only the audio is silenced. Audio items only.
++                self.soundMuted = soundMuted
++                if let playbackItem = self.playbackItem, case let .audio(player) = playbackItem {
++                    player.setSoundMuted(soundMuted: soundMuted)
++                }
+             case let .setBaseRate(baseRate):
+                 self.playbackRate = baseRate
+                 if let playbackItem = self.playbackItem {
+diff --git a/submodules/AccountContext/Sources/VoiceReplyFragment.swift b/submodules/AccountContext/Sources/VoiceReplyFragment.swift
+new file mode 100644
+index 0000000..6d40491
+--- /dev/null
++++ b/submodules/AccountContext/Sources/VoiceReplyFragment.swift
+@@ -0,0 +1,46 @@
++import Foundation
++import TelegramCore
++
++/// The part of a voice message a reply is about, chosen in the voice transcript sheet: the time (or time range) it covers as it
++/// reads there, and the text of the chosen words. At explicit Quote, the chat consumes this handoff into
++/// an editable, timestamped body blockquote plus an ordinary reply link. Only the user's normal Send sends it.
++/// Audio transcript text is not message.text and must not be passed as MTProto reply quote_text.
++public struct VoiceReplyFragment: Codable, Equatable {
++    public var timeText: String
++    public var text: String
++
++    public init(timeText: String, text: String) {
++        self.timeText = timeText
++        self.text = text
++    }
++}
++
++/// Holds a chosen fragment for the moment between pressing Reply in the transcript sheet and the chat setting the reply up:
++/// the chat opens asynchronously and sets the reply by message id alone, so this is how the fragment reaches it. It is read
++/// once, and goes stale after a few seconds. Main thread only.
++public final class VoiceReplyFragmentStore {
++    public static let shared = VoiceReplyFragmentStore()
++
++    private var pending: (id: EngineMessage.Id, accountId: Int64, fragment: VoiceReplyFragment, date: Double)?
++
++    private init() {
++    }
++
++    public func set(_ fragment: VoiceReplyFragment, for id: EngineMessage.Id, accountId: Int64) {
++        self.pending = (id, accountId, fragment, CFAbsoluteTimeGetCurrent())
++    }
++
++    public func take(for id: EngineMessage.Id, accountId: Int64) -> VoiceReplyFragment? {
++        guard let pending = self.pending else {
++            return nil
++        }
++        if pending.id != id || pending.accountId != accountId {
++            return nil
++        }
++        self.pending = nil
++        if CFAbsoluteTimeGetCurrent() - pending.date > 15.0 {
++            return nil
++        }
++        return pending.fragment
++    }
++}
